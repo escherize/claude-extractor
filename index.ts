@@ -1,15 +1,13 @@
 #!/usr/bin/env bun
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join, basename } from "path";
-import { spawnSync } from "child_process";
+import search from "@inquirer/search";
 
 const PROJECTS_DIR = join(process.env.HOME!, ".claude", "projects");
 
-interface Record {
+interface SessionRecord {
   type: string;
   isSidechain?: boolean;
-  parentUuid?: string | null;
-  uuid?: string;
   timestamp?: string;
   slug?: string;
   cwd?: string;
@@ -17,7 +15,6 @@ interface Record {
   message?: {
     role?: string;
     content?: string | ContentBlock[];
-    model?: string;
   };
 }
 
@@ -26,7 +23,6 @@ interface ContentBlock {
   text?: string;
   name?: string;
   input?: unknown;
-  tool_use_id?: string;
   content?: string | ContentBlock[];
   is_error?: boolean;
   tool_name?: string;
@@ -44,7 +40,7 @@ interface SessionMeta {
 function getSessionMeta(filePath: string): SessionMeta | null {
   try {
     const lines = readFileSync(filePath, "utf8").split("\n").filter(Boolean);
-    const records: Record[] = lines.map((l) => JSON.parse(l));
+    const records: SessionRecord[] = lines.map((l) => JSON.parse(l));
 
     const firstUser = records.find(
       (r) => r.type === "user" && !r.isSidechain && r.message?.role === "user"
@@ -123,7 +119,7 @@ function fmtContentBlock(block: ContentBlock): string {
 
 function sessionToMarkdown(filePath: string): string {
   const lines = readFileSync(filePath, "utf8").split("\n").filter(Boolean);
-  const records: Record[] = lines.map((l) => JSON.parse(l));
+  const records: SessionRecord[] = lines.map((l) => JSON.parse(l));
 
   const mainRecords = records.filter(
     (r) => !r.isSidechain && (r.type === "user" || r.type === "assistant")
@@ -175,27 +171,24 @@ function sessionToMarkdown(filePath: string): string {
   return parts.join("\n");
 }
 
-function pickSessionWithFzf(sessions: SessionMeta[]): SessionMeta | null {
-  const lines = sessions.map(
-    (s) =>
-      `${s.timestamp.slice(0, 10)} | ${s.cwd.replace(process.env.HOME!, "~")} | ${s.firstMessage}`
-  );
+function sessionLabel(s: SessionMeta): string {
+  const date = s.timestamp.slice(0, 10);
+  const cwd = s.cwd.replace(process.env.HOME!, "~");
+  return `${date} | ${cwd} | ${s.firstMessage}`;
+}
 
-  const result = spawnSync(
-    "fzf",
-    ["--prompt=session> ", "--height=40%", "--reverse"],
-    {
-      input: lines.join("\n"),
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "inherit"],
-    }
-  );
-
-  if (result.status !== 0 || !result.stdout.trim()) return null;
-
-  const chosen = result.stdout.trim();
-  const idx = lines.indexOf(chosen);
-  return idx >= 0 ? sessions[idx] : null;
+async function pickSession(sessions: SessionMeta[]): Promise<SessionMeta | null> {
+  const result = await search<SessionMeta>({
+    message: "Pick a session",
+    source: async (input) => {
+      const q = (input ?? "").toLowerCase();
+      const filtered = q
+        ? sessions.filter((s) => sessionLabel(s).toLowerCase().includes(q))
+        : sessions.slice(0, 50);
+      return filtered.map((s) => ({ name: sessionLabel(s), value: s }));
+    },
+  });
+  return result ?? null;
 }
 
 async function main() {
@@ -207,9 +200,7 @@ async function main() {
 
   if (listFlag) {
     for (const s of sessions) {
-      console.log(
-        `${s.timestamp.slice(0, 10)} | ${s.cwd.replace(process.env.HOME!, "~")} | ${s.firstMessage}`
-      );
+      console.log(sessionLabel(s));
     }
     return;
   }
@@ -223,7 +214,7 @@ async function main() {
       process.exit(1);
     }
   } else {
-    session = pickSessionWithFzf(sessions);
+    session = await pickSession(sessions);
     if (!session) process.exit(0);
   }
 
