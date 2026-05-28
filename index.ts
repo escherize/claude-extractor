@@ -323,7 +323,7 @@ function tailSession(filePath: string) {
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
         parts.push("");
-        process.stdout.write(render(parts.join("\n")));
+        outputMd(parts.join("\n"));
       } else if (record.type === "assistant") {
         const u = record.message?.usage;
         const stop = record.message?.stop_reason ? ` stop:${record.message.stop_reason}` : "";
@@ -333,7 +333,7 @@ function tailSession(filePath: string) {
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
         parts.push("");
-        process.stdout.write(render(parts.join("\n")));
+        outputMd(parts.join("\n"));
       }
     }
   }
