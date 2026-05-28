@@ -12,33 +12,15 @@ function compact(md: string): string {
     .replace(/(^###[^\n]*)\n\n/gm, "$1\n");
 }
 
-function glowRender(src: string): Buffer {
-  const result = spawnSync(GLOW!, ["--style", "dark", "-"], { input: src });
-  const out = result.stdout.toString();
-  // strip blank lines glow inserts after headings
-  const lines = out.split("\n");
-  const filtered: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const plain = lines[i].replace(/\x1b\[[0-9;]*m/g, "");
-    const isHeading = /^\s*#{1,6}\s/.test(plain);
-    const nextPlain = (lines[i + 1] ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-    if (isHeading && /^\s*$/.test(nextPlain)) {
-      filtered.push(lines[i]);
-      i++;
-    } else {
-      filtered.push(lines[i]);
-    }
-  }
-  return Buffer.from(filtered.join("\n"), "utf8");
-}
-
 function outputMd(md: string, pager = false) {
   const src = compact(md);
   if (GLOW && pager) {
-    const rendered = glowRender(src);
-    spawnSync("less", ["-R"], { input: rendered, stdio: ["pipe", "inherit", "inherit"] });
+    spawnSync("sh", ["-c", `${GLOW} - | less -R`], {
+      input: src,
+      stdio: ["pipe", "inherit", "inherit"],
+    });
   } else if (GLOW) {
-    process.stdout.write(glowRender(src));
+    spawnSync(GLOW, ["-"], { input: src, stdio: ["pipe", "inherit", "inherit"] });
   } else {
     process.stdout.write(src);
   }
@@ -382,6 +364,27 @@ function tailSession(filePath: string) {
 
 async function main() {
   const args = process.argv.slice(2);
+
+  if (args.includes("-h") || args.includes("--help")) {
+    process.stdout.write(`Usage: claude-extractor [session-id] [flags]
+
+Flags:
+  --list       List all sessions
+  --tail       Stream a session live (auto-picks latest if no ID given)
+  --latest     Dump the most recent session
+  --no-pager   Print directly, skip less
+  -h, --help   Show this help
+
+Examples:
+  claude-extractor                   # fzf picker
+  claude-extractor --tail            # tail latest session
+  claude-extractor abc123 --tail     # tail specific session
+  claude-extractor --latest          # dump most recent session
+  claude-extractor abc123 --no-pager # dump without pager
+`);
+    process.exit(0);
+  }
+
   const sessionIdArg = args.find((a) => !a.startsWith("-"));
   const listFlag = args.includes("--list");
   const tailFlag = args.includes("--tail");
