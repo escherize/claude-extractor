@@ -6,18 +6,41 @@ import search from "@inquirer/search";
 
 const GLOW = spawnSync("which", ["glow"], { encoding: "utf8" }).status === 0 ? "glow" : null;
 
+function compact(md: string): string {
+  return md
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/(^###[^\n]*)\n\n/gm, "$1\n");
+}
+
+function glowRender(src: string): string {
+  const result = spawnSync(GLOW!, ["-"], { input: src, encoding: "utf8" });
+  // glow pads headings to terminal width then adds a whitespace-only line - strip those
+  const lines = result.stdout.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const plain = lines[i].replace(/\x1b\[[0-9;]*m/g, "");
+    const isHeading = /^\s*#{1,6}\s/.test(plain);
+    const nextPlain = lines[i + 1]?.replace(/\x1b\[[0-9;]*m/g, "") ?? "";
+    const nextBlank = /^\s*$/.test(nextPlain);
+    if (isHeading && nextBlank) {
+      out.push(lines[i]);
+      i++; // skip blank line after heading
+    } else {
+      out.push(lines[i]);
+    }
+  }
+  return out.join("\n");
+}
+
 function outputMd(md: string, pager = false) {
+  const src = compact(md);
   if (GLOW && pager) {
-    // render to string, then pipe through less
-    const rendered = spawnSync(GLOW, ["-"], { input: md, encoding: "utf8" });
-    spawnSync("less", ["-R"], {
-      input: rendered.stdout,
-      stdio: ["pipe", "inherit", "inherit"],
-    });
+    const rendered = glowRender(src);
+    spawnSync("less", ["-R"], { input: rendered, stdio: ["pipe", "inherit", "inherit"] });
   } else if (GLOW) {
-    spawnSync(GLOW, ["-"], { input: md, stdio: ["pipe", "inherit", "inherit"] });
+    process.stdout.write(glowRender(src));
   } else {
-    process.stdout.write(md);
+    process.stdout.write(src);
   }
 }
 
