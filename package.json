@@ -1,0 +1,18 @@
+{
+  "name": "claude-extractor",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "claude-extractor": "./index.ts"
+  },
+  "scripts": {
+    "start": "bun run index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
