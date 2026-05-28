@@ -1,8 +1,26 @@
 #!/usr/bin/env bun
 import { readdirSync, readFileSync, statSync, watchFile } from "fs";
 import { join, basename } from "path";
+import { spawnSync } from "child_process";
 import search from "@inquirer/search";
 import chalk from "chalk";
+
+function hasGlow(): boolean {
+  return spawnSync("which", ["glow"], { encoding: "utf8" }).status === 0;
+}
+
+function outputMd(md: string) {
+  if (hasGlow()) {
+    const result = spawnSync("glow", ["-"], {
+      input: md,
+      encoding: "utf8",
+      stdio: ["pipe", "inherit", "inherit"],
+    });
+    if (result.status !== 0) process.stdout.write(render(md));
+  } else {
+    process.stdout.write(render(md));
+  }
+}
 
 function highlightJson(src: string): string {
   return src
@@ -360,7 +378,7 @@ async function main() {
   if (tailFlag) {
     tailSession(session!.filePath);
   } else {
-    process.stdout.write(render(sessionToMarkdown(session!.filePath)));
+    outputMd(sessionToMarkdown(session!.filePath));
   }
 }
 
