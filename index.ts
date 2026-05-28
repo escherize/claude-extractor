@@ -3,43 +3,15 @@ import { readdirSync, readFileSync, statSync, watchFile } from "fs";
 import { join, basename } from "path";
 import { spawnSync } from "child_process";
 import search from "@inquirer/search";
-import chalk from "chalk";
 
-function hasGlow(): boolean {
-  return spawnSync("which", ["glow"], { encoding: "utf8" }).status === 0;
-}
+const GLOW = spawnSync("which", ["glow"], { encoding: "utf8" }).status === 0 ? "glow" : null;
 
 function outputMd(md: string) {
-  if (hasGlow()) {
-    const result = spawnSync("glow", ["-"], {
-      input: md,
-      encoding: "utf8",
-      stdio: ["pipe", "inherit", "inherit"],
-    });
-    if (result.status !== 0) process.stdout.write(render(md));
+  if (GLOW) {
+    spawnSync(GLOW, ["-"], { input: md, stdio: ["pipe", "inherit", "inherit"] });
   } else {
-    process.stdout.write(render(md));
+    process.stdout.write(md);
   }
-}
-
-function highlightJson(src: string): string {
-  return src
-    .replace(/("(?:[^"\\]|\\.)*")(\s*:)/g, (_, k, colon) => chalk.cyan(k) + chalk.white(colon))
-    .replace(/:\s*("(?:[^"\\]|\\.)*")/g, (_, v) => ": " + chalk.green(v))
-    .replace(/:\s*(-?\d+\.?\d*)/g, (_, v) => ": " + chalk.yellow(v))
-    .replace(/:\s*(true|false|null)/g, (_, v) => ": " + chalk.magenta(v));
-}
-
-function render(md: string): string {
-  return md
-    .replace(/^### (.+)$/gm, (_, t) => chalk.bold.cyan(`### ${t}`))
-    .replace(/^## (.+)$/gm, (_, t) => chalk.bold.yellow(`## ${t}`))
-    .replace(/^# (.+)$/gm, (_, t) => chalk.bold.white.underline(t))
-    .replace(/\*\*(.+?)\*\*/g, (_, t) => chalk.bold(t))
-    .replace(/`([^`\n]+)`/g, (_, t) => chalk.green(t))
-    .replace(/```json\n([\s\S]*?)```/g, (_, body) => chalk.gray("```json\n") + highlightJson(body) + chalk.gray("```"))
-    .replace(/```[^\n]*\n[\s\S]*?```/g, (block) => chalk.gray(block))
-    .replace(/_([^_]+)_/g, (_, t) => chalk.dim(t));
 }
 
 const PROJECTS_DIR = join(process.env.HOME!, ".claude", "projects");
@@ -143,7 +115,7 @@ function listSessions(): SessionMeta[] {
   return sessions;
 }
 
-function fmtContentBlock(block: ContentBlock): string {
+function fmtContentBlock(block: ContentBlock, toolNames?: Map<string, string>): string {
   switch (block.type) {
     case "text":
       return block.text ?? "";
@@ -158,11 +130,13 @@ function fmtContentBlock(block: ContentBlock): string {
       if (typeof c === "string") {
         body = c.length > 3000 ? c.slice(0, 3000) + "\n…(truncated)" : c;
       } else if (Array.isArray(c)) {
-        body = c.map((b) => fmtContentBlock(b)).join("\n");
+        body = c.map((b) => fmtContentBlock(b, toolNames)).join("\n");
       }
       const errorFlag = block.is_error ? " ⚠️ error" : "";
       const shortId = block.tool_use_id?.slice(-8) ?? "";
-      const lang = /^(diff --git|--- a\/|\+\+\+ b\/)/.test(body) ? "diff" : "";
+      const toolName = toolNames?.get(block.tool_use_id ?? "") ?? "";
+      const isDiff = toolName === "Bash" && body.startsWith("diff --git");
+      const lang = isDiff ? "diff" : "";
       return `**Tool result**${errorFlag} (${shortId}):\n\`\`\`${lang}\n${body}\n\`\`\``;
     }
     case "tool_reference":
@@ -257,6 +231,17 @@ function sessionToMarkdown(filePath: string): string {
   parts.push("---");
   parts.push("");
 
+  // build id->name map for linking tool_results back to their tool_use name
+  const toolNames = new Map<string, string>();
+  for (const r of records) {
+    const content = r.message?.content;
+    if (Array.isArray(content)) {
+      for (const b of content) {
+        if (b.type === "tool_use" && b.id && b.name) toolNames.set(b.id, b.name);
+      }
+    }
+  }
+
   for (const record of mainRecords) {
     const content = record.message?.content;
     if (!content) continue;
@@ -268,7 +253,7 @@ function sessionToMarkdown(filePath: string): string {
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
-        for (const block of content) parts.push(fmtContentBlock(block));
+        for (const block of content) parts.push(fmtContentBlock(block, toolNames));
       }
       parts.push("");
     } else if (record.type === "assistant") {
@@ -281,7 +266,7 @@ function sessionToMarkdown(filePath: string): string {
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
-        for (const block of content) parts.push(fmtContentBlock(block));
+        for (const block of content) parts.push(fmtContentBlock(block, toolNames));
       }
       parts.push("");
     }
@@ -297,17 +282,23 @@ function sessionLabel(s: SessionMeta): string {
 }
 
 async function pickSession(sessions: SessionMeta[]): Promise<SessionMeta | null> {
-  const result = await search<SessionMeta>({
-    message: "Pick a session",
-    source: async (input) => {
-      const q = (input ?? "").toLowerCase();
-      const filtered = q
-        ? sessions.filter((s) => sessionLabel(s).toLowerCase().includes(q))
-        : sessions.slice(0, 50);
-      return filtered.map((s) => ({ name: sessionLabel(s), value: s }));
-    },
-  });
-  return result ?? null;
+  try {
+    return await search<SessionMeta>({
+      message: "Pick a session",
+      source: async (input) => {
+        const q = (input ?? "").toLowerCase();
+        const filtered = q
+          ? sessions.filter((s) => sessionLabel(s).toLowerCase().includes(q))
+          : sessions.slice(0, 50);
+        return filtered.map((s) => ({ name: sessionLabel(s), value: s }));
+      },
+    });
+  } catch {
+    // user pressed Ctrl-C - show hint using the top result
+    const top = sessions[0];
+    if (top) process.stderr.write(`\nuse: claude-extractor ${top.sessionId.slice(0, 8)}\n`);
+    return null;
+  }
 }
 
 function tailSession(filePath: string) {
