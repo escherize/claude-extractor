@@ -13,7 +13,7 @@ function compact(md: string): string {
 }
 
 function glowRender(src: string): string {
-  const result = spawnSync(GLOW!, ["-"], { input: src, encoding: "utf8" });
+  const result = spawnSync(GLOW!, ["--style", "dark", "-"], { input: src, encoding: "utf8" });
   // glow pads headings to terminal width then adds a whitespace-only line - strip those
   const lines = result.stdout.split("\n");
   const out: string[] = [];
