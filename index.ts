@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { readdirSync, readFileSync, statSync } from "fs";
+import { readdirSync, readFileSync, statSync, watchFile } from "fs";
 import { join, basename } from "path";
 import search from "@inquirer/search";
 
@@ -191,10 +191,50 @@ async function pickSession(sessions: SessionMeta[]): Promise<SessionMeta | null>
   return result ?? null;
 }
 
+function tailSession(filePath: string) {
+  let offset = 0;
+
+  function flush() {
+    const raw = readFileSync(filePath, "utf8");
+    const lines = raw.split("\n").filter(Boolean);
+    const records: SessionRecord[] = [];
+    for (const line of lines.slice(offset)) {
+      try { records.push(JSON.parse(line)); } catch { /* incomplete line */ }
+    }
+    offset = lines.length;
+
+    for (const record of records) {
+      if (record.isSidechain) continue;
+      if (record.type === "user" && record.message?.role === "user") {
+        process.stdout.write("\n### 👤 User\n\n");
+        const content = record.message.content;
+        if (typeof content === "string") {
+          process.stdout.write(content + "\n");
+        } else if (Array.isArray(content)) {
+          for (const block of content) process.stdout.write(fmtContentBlock(block) + "\n");
+        }
+      } else if (record.type === "assistant") {
+        process.stdout.write("\n### 🤖 Assistant\n\n");
+        const content = record.message?.content;
+        if (typeof content === "string") {
+          process.stdout.write(content + "\n");
+        } else if (Array.isArray(content)) {
+          for (const block of content) process.stdout.write(fmtContentBlock(block) + "\n");
+        }
+      }
+    }
+  }
+
+  flush();
+  process.stderr.write(`\n[watching ${filePath}]\n`);
+  watchFile(filePath, { interval: 500 }, flush);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const sessionIdArg = args.find((a) => !a.startsWith("-"));
   const listFlag = args.includes("--list");
+  const tailFlag = args.includes("--tail");
 
   const sessions = listSessions();
 
@@ -218,8 +258,12 @@ async function main() {
     if (!session) process.exit(0);
   }
 
-  const md = sessionToMarkdown(session.filePath);
-  process.stdout.write(md);
+  if (tailFlag) {
+    tailSession(session!.filePath);
+  } else {
+    const md = sessionToMarkdown(session!.filePath);
+    process.stdout.write(md);
+  }
 }
 
 main().catch((e) => {
