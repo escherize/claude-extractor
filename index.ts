@@ -6,8 +6,15 @@ import search from "@inquirer/search";
 
 const GLOW = spawnSync("which", ["glow"], { encoding: "utf8" }).status === 0 ? "glow" : null;
 
-function outputMd(md: string) {
-  if (GLOW) {
+function outputMd(md: string, pager = false) {
+  if (GLOW && pager) {
+    // render to string, then pipe through less
+    const rendered = spawnSync(GLOW, ["-"], { input: md, encoding: "utf8" });
+    spawnSync("less", ["-R"], {
+      input: rendered.stdout,
+      stdio: ["pipe", "inherit", "inherit"],
+    });
+  } else if (GLOW) {
     spawnSync(GLOW, ["-"], { input: md, stdio: ["pipe", "inherit", "inherit"] });
   } else {
     process.stdout.write(md);
@@ -348,6 +355,7 @@ async function main() {
   const sessionIdArg = args.find((a) => !a.startsWith("-"));
   const listFlag = args.includes("--list");
   const tailFlag = args.includes("--tail");
+  const noPager = args.includes("--no-pager");
 
   const sessions = listSessions();
 
@@ -372,7 +380,7 @@ async function main() {
   if (tailFlag) {
     tailSession(session!.filePath);
   } else {
-    outputMd(sessionToMarkdown(session!.filePath));
+    outputMd(sessionToMarkdown(session!.filePath), !noPager);
   }
 }
 
