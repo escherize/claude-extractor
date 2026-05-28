@@ -4,6 +4,14 @@ import { join, basename } from "path";
 import search from "@inquirer/search";
 import chalk from "chalk";
 
+function highlightJson(src: string): string {
+  return src
+    .replace(/("(?:[^"\\]|\\.)*")(\s*:)/g, (_, k, colon) => chalk.cyan(k) + chalk.white(colon))
+    .replace(/:\s*("(?:[^"\\]|\\.)*")/g, (_, v) => ": " + chalk.green(v))
+    .replace(/:\s*(-?\d+\.?\d*)/g, (_, v) => ": " + chalk.yellow(v))
+    .replace(/:\s*(true|false|null)/g, (_, v) => ": " + chalk.magenta(v));
+}
+
 function render(md: string): string {
   return md
     .replace(/^### (.+)$/gm, (_, t) => chalk.bold.cyan(`### ${t}`))
@@ -11,7 +19,8 @@ function render(md: string): string {
     .replace(/^# (.+)$/gm, (_, t) => chalk.bold.white.underline(t))
     .replace(/\*\*(.+?)\*\*/g, (_, t) => chalk.bold(t))
     .replace(/`([^`\n]+)`/g, (_, t) => chalk.green(t))
-    .replace(/^(```[\s\S]*?```)/gm, (block) => chalk.gray(block))
+    .replace(/```json\n([\s\S]*?)```/g, (_, body) => chalk.gray("```json\n") + highlightJson(body) + chalk.gray("```"))
+    .replace(/```[^\n]*\n[\s\S]*?```/g, (block) => chalk.gray(block))
     .replace(/_([^_]+)_/g, (_, t) => chalk.dim(t));
 }
 
@@ -24,9 +33,14 @@ interface SessionRecord {
   slug?: string;
   cwd?: string;
   sessionId?: string;
+  permissionMode?: string;
+  gitBranch?: string;
+  version?: string;
+  entrypoint?: string;
   message?: {
     role?: string;
     content?: string | ContentBlock[];
+    stop_reason?: string;
     usage?: {
       input_tokens?: number;
       output_tokens?: number;
@@ -40,7 +54,9 @@ interface ContentBlock {
   type: string;
   text?: string;
   name?: string;
+  id?: string;
   input?: unknown;
+  tool_use_id?: string;
   content?: string | ContentBlock[];
   is_error?: boolean;
   tool_name?: string;
@@ -115,7 +131,7 @@ function fmtContentBlock(block: ContentBlock): string {
       return block.text ?? "";
     case "tool_use": {
       const inputStr = JSON.stringify(block.input, null, 2);
-      return `**Tool call:** \`${block.name}\`\n\`\`\`json\n${inputStr}\n\`\`\``;
+      return `**Tool call:** \`${block.name}\` _(id: ${block.id})_\n\`\`\`json\n${inputStr}\n\`\`\``;
     }
     case "tool_result": {
       const c = block.content;
@@ -126,7 +142,7 @@ function fmtContentBlock(block: ContentBlock): string {
         body = c.map((b) => fmtContentBlock(b)).join("\n");
       }
       const errorFlag = block.is_error ? " ⚠️ error" : "";
-      return `**Tool result**${errorFlag}:\n\`\`\`\n${body}\n\`\`\``;
+      return `**Tool result**${errorFlag} _(${block.tool_use_id?.slice(0, 8)})_:\n\`\`\`\n${body}\n\`\`\``;
     }
     case "tool_reference":
       return `\`${block.tool_name}\``;
@@ -135,31 +151,99 @@ function fmtContentBlock(block: ContentBlock): string {
   }
 }
 
+interface SessionStats {
+  duration: string;
+  totalIn: number;
+  totalOut: number;
+  totalCacheRead: number;
+  toolCounts: Record<string, number>;
+  turns: number;
+}
+
+function computeStats(records: SessionRecord[]): SessionStats {
+  const main = records.filter((r) => !r.isSidechain);
+  const timestamps = main.map((r) => r.timestamp).filter(Boolean) as string[];
+  const first = timestamps[0];
+  const last = timestamps[timestamps.length - 1];
+  const durationMs = first && last ? Date.parse(last) - Date.parse(first) : 0;
+  const mins = Math.floor(durationMs / 60000);
+  const secs = Math.floor((durationMs % 60000) / 1000);
+  const duration = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+  let totalIn = 0, totalOut = 0, totalCacheRead = 0;
+  const toolCounts: Record<string, number> = {};
+  let turns = 0;
+
+  for (const r of main) {
+    if (r.type === "assistant") {
+      const u = r.message?.usage;
+      if (u) {
+        totalIn += u.input_tokens ?? 0;
+        totalOut += u.output_tokens ?? 0;
+        totalCacheRead += u.cache_read_input_tokens ?? 0;
+      }
+      const content = r.message?.content;
+      if (Array.isArray(content)) {
+        for (const b of content) {
+          if (b.type === "tool_use" && b.name) {
+            toolCounts[b.name] = (toolCounts[b.name] ?? 0) + 1;
+          }
+        }
+      }
+    }
+    if (r.type === "user" && r.message?.role === "user") turns++;
+  }
+
+  return { duration, totalIn, totalOut, totalCacheRead, toolCounts, turns };
+}
+
+function fmtStats(stats: SessionStats): string {
+  const toolSummary = Object.entries(stats.toolCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, n]) => `${name}×${n}`)
+    .join(" ");
+  return [
+    `**Duration:** ${stats.duration}`,
+    `**Turns:** ${stats.turns}`,
+    `**Tokens:** in ${stats.totalIn.toLocaleString()} out ${stats.totalOut.toLocaleString()}${stats.totalCacheRead ? ` cache_read ${stats.totalCacheRead.toLocaleString()}` : ""}`,
+    toolSummary ? `**Tools:** ${toolSummary}` : "",
+  ].filter(Boolean).join(" | ");
+}
+
 function sessionToMarkdown(filePath: string): string {
   const lines = readFileSync(filePath, "utf8").split("\n").filter(Boolean);
   const records: SessionRecord[] = lines.map((l) => JSON.parse(l));
-
   const mainRecords = records.filter(
     (r) => !r.isSidechain && (r.type === "user" || r.type === "assistant")
   );
 
   const meta = getSessionMeta(filePath);
+  const stats = computeStats(records);
   const parts: string[] = [];
 
-  const ts = meta?.timestamp ? new Date(meta.timestamp).toLocaleString() : "unknown";
+  // header
+  const firstRecord = records.find((r) => !r.isSidechain && r.timestamp);
+  const branch = firstRecord?.gitBranch ?? "";
+  const entrypoint = firstRecord?.entrypoint ?? "";
+  const version = firstRecord?.version ?? "";
+
   parts.push(`# ${meta?.slug ?? basename(filePath, ".jsonl")}`);
-  parts.push(`**${ts}** | \`${meta?.cwd?.replace(process.env.HOME!, "~") ?? ""}\` | \`${meta?.sessionId?.slice(0, 8) ?? ""}\``);
+  parts.push(`**${meta?.timestamp ? new Date(meta.timestamp).toLocaleString() : "unknown"}** | \`${meta?.cwd?.replace(process.env.HOME!, "~") ?? ""}\` | \`${meta?.sessionId?.slice(0, 8) ?? ""}\``);
+  if (branch || entrypoint || version) {
+    parts.push(`**Branch:** \`${branch}\` | **Via:** ${entrypoint} | **v${version}**`);
+  }
+  parts.push(fmtStats(stats));
   parts.push("---");
   parts.push("");
 
   for (const record of mainRecords) {
     const content = record.message?.content;
     if (!content) continue;
-
     const time = record.timestamp ? new Date(record.timestamp).toLocaleTimeString() : "";
 
     if (record.type === "user") {
-      parts.push(`### 👤 User _${time}_`);
+      const mode = record.permissionMode ? ` [${record.permissionMode}]` : "";
+      parts.push(`### 👤 User _${time}${mode}_`);
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
@@ -168,10 +252,11 @@ function sessionToMarkdown(filePath: string): string {
       parts.push("");
     } else if (record.type === "assistant") {
       const u = record.message?.usage;
+      const stop = record.message?.stop_reason ? ` stop:${record.message.stop_reason}` : "";
       const tokenInfo = u
-        ? ` _(in: ${u.input_tokens} out: ${u.output_tokens}${u.cache_read_input_tokens ? ` cache_read: ${u.cache_read_input_tokens}` : ""})_`
+        ? ` _(in:${u.input_tokens} out:${u.output_tokens}${u.cache_read_input_tokens ? ` cr:${u.cache_read_input_tokens}` : ""}${u.cache_creation_input_tokens ? ` cw:${u.cache_creation_input_tokens}` : ""}${stop})_`
         : "";
-      parts.push(`### 🤖 Assistant _${time}_${tokenInfo}`);
+      parts.push(`### 🤖 Assistant _${time}${tokenInfo}_`);
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
@@ -220,7 +305,8 @@ function tailSession(filePath: string) {
       if (record.isSidechain) continue;
       const time = record.timestamp ? new Date(record.timestamp).toLocaleTimeString() : "";
       if (record.type === "user" && record.message?.role === "user") {
-        const parts: string[] = [`### 👤 User _${time}_`];
+        const mode = record.permissionMode ? ` [${record.permissionMode}]` : "";
+        const parts: string[] = [`### 👤 User _${time}${mode}_`];
         const content = record.message.content;
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
@@ -228,8 +314,9 @@ function tailSession(filePath: string) {
         process.stdout.write(render(parts.join("\n")));
       } else if (record.type === "assistant") {
         const u = record.message?.usage;
-        const tokenInfo = u ? ` _(in: ${u.input_tokens} out: ${u.output_tokens})_` : "";
-        const parts: string[] = [`### 🤖 Assistant _${time}_${tokenInfo}`];
+        const stop = record.message?.stop_reason ? ` stop:${record.message.stop_reason}` : "";
+        const tokenInfo = u ? ` _(in:${u.input_tokens} out:${u.output_tokens}${stop})_` : "";
+        const parts: string[] = [`### 🤖 Assistant _${time}${tokenInfo}_`];
         const content = record.message?.content;
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
@@ -253,9 +340,7 @@ async function main() {
   const sessions = listSessions();
 
   if (listFlag) {
-    for (const s of sessions) {
-      console.log(sessionLabel(s));
-    }
+    for (const s of sessions) console.log(sessionLabel(s));
     return;
   }
 
@@ -275,8 +360,7 @@ async function main() {
   if (tailFlag) {
     tailSession(session!.filePath);
   } else {
-    const md = sessionToMarkdown(session!.filePath);
-    process.stdout.write(render(md));
+    process.stdout.write(render(sessionToMarkdown(session!.filePath)));
   }
 }
 
