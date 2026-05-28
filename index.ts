@@ -255,6 +255,10 @@ function sessionToMarkdown(filePath: string): string {
     const time = record.timestamp ? new Date(record.timestamp).toLocaleTimeString() : "";
 
     if (record.type === "user") {
+      // skip tool-result-only records (no human text)
+      const hasHumanText = typeof content === "string"
+        || (Array.isArray(content) && content.some((b) => b.type === "text"));
+      if (!hasHumanText) continue;
       const mode = record.permissionMode ? ` [${record.permissionMode}]` : "";
       parts.push(`### 👤 User (${time}${mode})`);
       if (typeof content === "string") {
@@ -324,9 +328,12 @@ function tailSession(filePath: string) {
       if (record.isSidechain) continue;
       const time = record.timestamp ? new Date(record.timestamp).toLocaleTimeString() : "";
       if (record.type === "user" && record.message?.role === "user") {
+        const content = record.message.content;
+        const hasHumanText = typeof content === "string"
+          || (Array.isArray(content) && content.some((b) => b.type === "text"));
+        if (!hasHumanText) continue;
         const mode = record.permissionMode ? ` [${record.permissionMode}]` : "";
         const parts: string[] = [`### 👤 User (${time}${mode})`];
-        const content = record.message.content;
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
         parts.push("");
