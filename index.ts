@@ -149,7 +149,8 @@ function fmtContentBlock(block: ContentBlock): string {
       return block.text ?? "";
     case "tool_use": {
       const inputStr = JSON.stringify(block.input, null, 2);
-      return `**Tool call:** \`${block.name}\` _(id: ${block.id})_\n\`\`\`json\n${inputStr}\n\`\`\``;
+      const shortId = block.id?.slice(-8) ?? "";
+      return `**Tool call:** \`${block.name}\` (${shortId})\n\`\`\`json\n${inputStr}\n\`\`\``;
     }
     case "tool_result": {
       const c = block.content;
@@ -160,7 +161,8 @@ function fmtContentBlock(block: ContentBlock): string {
         body = c.map((b) => fmtContentBlock(b)).join("\n");
       }
       const errorFlag = block.is_error ? " ⚠️ error" : "";
-      return `**Tool result**${errorFlag} _(${block.tool_use_id?.slice(0, 8)})_:\n\`\`\`\n${body}\n\`\`\``;
+      const shortId = block.tool_use_id?.slice(-8) ?? "";
+      return `**Tool result**${errorFlag} (${shortId}):\n\`\`\`\n${body}\n\`\`\``;
     }
     case "tool_reference":
       return `\`${block.tool_name}\``;
@@ -261,7 +263,7 @@ function sessionToMarkdown(filePath: string): string {
 
     if (record.type === "user") {
       const mode = record.permissionMode ? ` [${record.permissionMode}]` : "";
-      parts.push(`### 👤 User _${time}${mode}_`);
+      parts.push(`### 👤 User (${time}${mode})`);
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
@@ -270,11 +272,11 @@ function sessionToMarkdown(filePath: string): string {
       parts.push("");
     } else if (record.type === "assistant") {
       const u = record.message?.usage;
-      const stop = record.message?.stop_reason ? ` stop:${record.message.stop_reason}` : "";
+      const stop = record.message?.stop_reason ? ` stop:${record.message.stop_reason.replace(/_/g, "-")}` : "";
       const tokenInfo = u
-        ? ` _(in:${u.input_tokens} out:${u.output_tokens}${u.cache_read_input_tokens ? ` cr:${u.cache_read_input_tokens}` : ""}${u.cache_creation_input_tokens ? ` cw:${u.cache_creation_input_tokens}` : ""}${stop})_`
+        ? ` (in:${u.input_tokens} out:${u.output_tokens}${u.cache_read_input_tokens ? ` cr:${u.cache_read_input_tokens}` : ""}${u.cache_creation_input_tokens ? ` cw:${u.cache_creation_input_tokens}` : ""}${stop})`
         : "";
-      parts.push(`### 🤖 Assistant _${time}${tokenInfo}_`);
+      parts.push(`### 🤖 Assistant (${time}${tokenInfo})`);
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
@@ -324,7 +326,7 @@ function tailSession(filePath: string) {
       const time = record.timestamp ? new Date(record.timestamp).toLocaleTimeString() : "";
       if (record.type === "user" && record.message?.role === "user") {
         const mode = record.permissionMode ? ` [${record.permissionMode}]` : "";
-        const parts: string[] = [`### 👤 User _${time}${mode}_`];
+        const parts: string[] = [`### 👤 User (${time}${mode})`];
         const content = record.message.content;
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
@@ -333,8 +335,8 @@ function tailSession(filePath: string) {
       } else if (record.type === "assistant") {
         const u = record.message?.usage;
         const stop = record.message?.stop_reason ? ` stop:${record.message.stop_reason}` : "";
-        const tokenInfo = u ? ` _(in:${u.input_tokens} out:${u.output_tokens}${stop})_` : "";
-        const parts: string[] = [`### 🤖 Assistant _${time}${tokenInfo}_`];
+        const tokenInfo = u ? ` (in:${u.input_tokens} out:${u.output_tokens}${stop.replace(/_/g, "-")})` : "";
+        const parts: string[] = [`### 🤖 Assistant (${time}${tokenInfo})`];
         const content = record.message?.content;
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
