@@ -162,7 +162,8 @@ function fmtContentBlock(block: ContentBlock): string {
       }
       const errorFlag = block.is_error ? " ⚠️ error" : "";
       const shortId = block.tool_use_id?.slice(-8) ?? "";
-      return `**Tool result**${errorFlag} (${shortId}):\n\`\`\`\n${body}\n\`\`\``;
+      const lang = /^(diff --git|--- a\/|\+\+\+ b\/)/.test(body) ? "diff" : "";
+      return `**Tool result**${errorFlag} (${shortId}):\n\`\`\`${lang}\n${body}\n\`\`\``;
     }
     case "tool_reference":
       return `\`${block.tool_name}\``;
