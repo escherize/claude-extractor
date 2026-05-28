@@ -12,24 +12,24 @@ function compact(md: string): string {
     .replace(/(^###[^\n]*)\n\n/gm, "$1\n");
 }
 
-function glowRender(src: string): string {
-  const result = spawnSync(GLOW!, ["--style", "dark", "-"], { input: src, encoding: "utf8" });
-  // glow pads headings to terminal width then adds a whitespace-only line - strip those
-  const lines = result.stdout.split("\n");
-  const out: string[] = [];
+function glowRender(src: string): Buffer {
+  const result = spawnSync(GLOW!, ["--style", "dark", "-"], { input: src });
+  const out = result.stdout.toString();
+  // strip blank lines glow inserts after headings
+  const lines = out.split("\n");
+  const filtered: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const plain = lines[i].replace(/\x1b\[[0-9;]*m/g, "");
     const isHeading = /^\s*#{1,6}\s/.test(plain);
-    const nextPlain = lines[i + 1]?.replace(/\x1b\[[0-9;]*m/g, "") ?? "";
-    const nextBlank = /^\s*$/.test(nextPlain);
-    if (isHeading && nextBlank) {
-      out.push(lines[i]);
-      i++; // skip blank line after heading
+    const nextPlain = (lines[i + 1] ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+    if (isHeading && /^\s*$/.test(nextPlain)) {
+      filtered.push(lines[i]);
+      i++;
     } else {
-      out.push(lines[i]);
+      filtered.push(lines[i]);
     }
   }
-  return out.join("\n");
+  return Buffer.from(filtered.join("\n"), "utf8");
 }
 
 function outputMd(md: string, pager = false) {
