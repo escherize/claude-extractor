@@ -363,6 +363,7 @@ async function main() {
   const listFlag = args.includes("--list");
   const tailFlag = args.includes("--tail");
   const noPager = args.includes("--no-pager");
+  const latestFlag = args.includes("--latest");
 
   const sessions = listSessions();
 
@@ -379,6 +380,10 @@ async function main() {
       console.error(`No session found matching: ${sessionIdArg}`);
       process.exit(1);
     }
+  } else if (latestFlag || (tailFlag && !sessionIdArg)) {
+    session = sessions[0] ?? null;
+    if (!session) { console.error("No sessions found"); process.exit(1); }
+    process.stderr.write(`[session: ${session.slug || session.sessionId.slice(0, 8)}]\n`);
   } else {
     session = await pickSession(sessions);
     if (!session) process.exit(0);
