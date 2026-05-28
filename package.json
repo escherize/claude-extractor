@@ -6,6 +6,10 @@
   "bin": {
     "claude-extractor": "./index.ts"
   },
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
   "scripts": {
     "start": "bun run index.ts"
   },
