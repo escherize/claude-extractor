@@ -2,6 +2,18 @@
 import { readdirSync, readFileSync, statSync, watchFile } from "fs";
 import { join, basename } from "path";
 import search from "@inquirer/search";
+import chalk from "chalk";
+
+function render(md: string): string {
+  return md
+    .replace(/^### (.+)$/gm, (_, t) => chalk.bold.cyan(`### ${t}`))
+    .replace(/^## (.+)$/gm, (_, t) => chalk.bold.yellow(`## ${t}`))
+    .replace(/^# (.+)$/gm, (_, t) => chalk.bold.white.underline(t))
+    .replace(/\*\*(.+?)\*\*/g, (_, t) => chalk.bold(t))
+    .replace(/`([^`\n]+)`/g, (_, t) => chalk.green(t))
+    .replace(/^(```[\s\S]*?```)/gm, (block) => chalk.gray(block))
+    .replace(/_([^_]+)_/g, (_, t) => chalk.dim(t));
+}
 
 const PROJECTS_DIR = join(process.env.HOME!, ".claude", "projects");
 
@@ -15,6 +27,12 @@ interface SessionRecord {
   message?: {
     role?: string;
     content?: string | ContentBlock[];
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
   };
 }
 
@@ -128,12 +146,9 @@ function sessionToMarkdown(filePath: string): string {
   const meta = getSessionMeta(filePath);
   const parts: string[] = [];
 
+  const ts = meta?.timestamp ? new Date(meta.timestamp).toLocaleString() : "unknown";
   parts.push(`# ${meta?.slug ?? basename(filePath, ".jsonl")}`);
-  parts.push("");
-  parts.push(`**Date:** ${meta?.timestamp ?? "unknown"}`);
-  parts.push(`**CWD:** \`${meta?.cwd ?? ""}\``);
-  parts.push(`**Session:** \`${meta?.sessionId ?? ""}\``);
-  parts.push("");
+  parts.push(`**${ts}** | \`${meta?.cwd?.replace(process.env.HOME!, "~") ?? ""}\` | \`${meta?.sessionId?.slice(0, 8) ?? ""}\``);
   parts.push("---");
   parts.push("");
 
@@ -141,28 +156,26 @@ function sessionToMarkdown(filePath: string): string {
     const content = record.message?.content;
     if (!content) continue;
 
+    const time = record.timestamp ? new Date(record.timestamp).toLocaleTimeString() : "";
+
     if (record.type === "user") {
-      parts.push("### 👤 User");
-      parts.push("");
+      parts.push(`### 👤 User _${time}_`);
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
-        for (const block of content) {
-          parts.push(fmtContentBlock(block));
-          parts.push("");
-        }
+        for (const block of content) parts.push(fmtContentBlock(block));
       }
       parts.push("");
     } else if (record.type === "assistant") {
-      parts.push("### 🤖 Assistant");
-      parts.push("");
+      const u = record.message?.usage;
+      const tokenInfo = u
+        ? ` _(in: ${u.input_tokens} out: ${u.output_tokens}${u.cache_read_input_tokens ? ` cache_read: ${u.cache_read_input_tokens}` : ""})_`
+        : "";
+      parts.push(`### 🤖 Assistant _${time}_${tokenInfo}`);
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
-        for (const block of content) {
-          parts.push(fmtContentBlock(block));
-          parts.push("");
-        }
+        for (const block of content) parts.push(fmtContentBlock(block));
       }
       parts.push("");
     }
@@ -205,22 +218,23 @@ function tailSession(filePath: string) {
 
     for (const record of records) {
       if (record.isSidechain) continue;
+      const time = record.timestamp ? new Date(record.timestamp).toLocaleTimeString() : "";
       if (record.type === "user" && record.message?.role === "user") {
-        process.stdout.write("\n### 👤 User\n\n");
+        const parts: string[] = [`### 👤 User _${time}_`];
         const content = record.message.content;
-        if (typeof content === "string") {
-          process.stdout.write(content + "\n");
-        } else if (Array.isArray(content)) {
-          for (const block of content) process.stdout.write(fmtContentBlock(block) + "\n");
-        }
+        if (typeof content === "string") parts.push(content);
+        else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
+        parts.push("");
+        process.stdout.write(render(parts.join("\n")));
       } else if (record.type === "assistant") {
-        process.stdout.write("\n### 🤖 Assistant\n\n");
+        const u = record.message?.usage;
+        const tokenInfo = u ? ` _(in: ${u.input_tokens} out: ${u.output_tokens})_` : "";
+        const parts: string[] = [`### 🤖 Assistant _${time}_${tokenInfo}`];
         const content = record.message?.content;
-        if (typeof content === "string") {
-          process.stdout.write(content + "\n");
-        } else if (Array.isArray(content)) {
-          for (const block of content) process.stdout.write(fmtContentBlock(block) + "\n");
-        }
+        if (typeof content === "string") parts.push(content);
+        else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
+        parts.push("");
+        process.stdout.write(render(parts.join("\n")));
       }
     }
   }
@@ -262,7 +276,7 @@ async function main() {
     tailSession(session!.filePath);
   } else {
     const md = sessionToMarkdown(session!.filePath);
-    process.stdout.write(md);
+    process.stdout.write(render(md));
   }
 }
 
