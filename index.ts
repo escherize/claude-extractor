@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { readdirSync, readFileSync, statSync, watchFile } from "fs";
-import { join, basename } from "path";
+import { join, basename, dirname } from "path";
 import { spawnSync } from "child_process";
 import search from "@inquirer/search";
 
@@ -12,19 +12,18 @@ function compact(md: string): string {
     .replace(/(^###[^\n]*)\n\n/gm, "$1\n");
 }
 
-function outputMd(md: string, pager = false) {
+function outputMd(md: string, mode: "raw" | "glow" | "pager" = "raw") {
   const src = compact(md);
-  if (GLOW && pager) {
-    spawnSync("sh", ["-c", `${GLOW} - | less -R`], {
-      input: src,
-      stdio: ["pipe", "inherit", "inherit"],
-    });
-  } else if (GLOW) {
+  if (mode === "pager" && GLOW) {
+    spawnSync("sh", ["-c", `${GLOW} - | less -R`], { input: src, stdio: ["pipe", "inherit", "inherit"] });
+  } else if ((mode === "glow" || mode === "pager") && GLOW) {
     spawnSync(GLOW, ["-"], { input: src, stdio: ["pipe", "inherit", "inherit"] });
   } else {
     process.stdout.write(src);
   }
 }
+
+export { loadSubagents, firstPrompt };
 
 const PROJECTS_DIR = join(process.env.HOME!, ".claude", "projects");
 
@@ -71,11 +70,14 @@ interface SessionMeta {
   slug: string;
   timestamp: string;
   firstMessage: string;
+  sizeKb: number;
 }
 
 function getSessionMeta(filePath: string): SessionMeta | null {
   try {
-    const lines = readFileSync(filePath, "utf8").split("\n").filter(Boolean);
+    const raw = readFileSync(filePath, "utf8");
+    const sizeKb = Math.round(raw.length / 1024);
+    const lines = raw.split("\n").filter(Boolean);
     const records: SessionRecord[] = lines.map((l) => JSON.parse(l));
 
     const firstUser = records.find(
@@ -99,16 +101,22 @@ function getSessionMeta(filePath: string): SessionMeta | null {
       slug: firstUser.slug ?? "",
       timestamp: firstUser.timestamp ?? "",
       firstMessage,
+      sizeKb,
     };
   } catch {
     return null;
   }
 }
 
-function listSessions(): SessionMeta[] {
+function cwdToProjectDir(cwd: string): string {
+  return cwd.replace(/\//g, "-");
+}
+
+function listSessions(projectDirFilter?: string): SessionMeta[] {
   const sessions: SessionMeta[] = [];
 
   for (const projectDir of readdirSync(PROJECTS_DIR)) {
+    if (projectDirFilter && projectDir !== projectDirFilter) continue;
     const projectPath = join(PROJECTS_DIR, projectDir);
     try {
       if (!statSync(projectPath).isDirectory()) continue;
@@ -127,13 +135,78 @@ function listSessions(): SessionMeta[] {
   return sessions;
 }
 
-function fmtContentBlock(block: ContentBlock, toolNames?: Map<string, string>): string {
+function loadSubagents(filePath: string): Map<string, SessionRecord[]> {
+  // returns map of agentId -> records, from <session-dir>/subagents/
+  const sessionId = basename(filePath, ".jsonl");
+  const subagentDir = join(dirname(filePath), sessionId, "subagents");
+  const result = new Map<string, SessionRecord[]>();
+  try {
+    for (const f of readdirSync(subagentDir)) {
+      if (!f.endsWith(".jsonl")) continue;
+      const agentId = f.replace(/^agent-/, "").replace(/\.jsonl$/, "");
+      const recs = readFileSync(join(subagentDir, f), "utf8")
+        .split("\n").filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .filter(Boolean) as SessionRecord[];
+      result.set(agentId, recs);
+    }
+  } catch { /* no subagents dir */ }
+  return result;
+}
+
+function firstPrompt(records: SessionRecord[]): string {
+  const first = records.find((r) => r.type === "user" && r.message?.role === "user");
+  const c = first?.message?.content;
+  if (typeof c === "string") return c.slice(0, 200);
+  if (Array.isArray(c)) return (c.find((b) => b.type === "text")?.text ?? "").slice(0, 200);
+  return "";
+}
+
+function renderSubagent(records: SessionRecord[], depth: number): string {
+  const prefix = "> ".repeat(depth);
+  const parts: string[] = [];
+  const mainRecs = records.filter((r) => r.type === "user" || r.type === "assistant");
+  for (const r of mainRecs) {
+    const content = r.message?.content;
+    if (!content) continue;
+    const time = r.timestamp ? new Date(r.timestamp).toLocaleTimeString() : "";
+    if (r.type === "user") {
+      const hasText = typeof content === "string" || (Array.isArray(content) && content.some((b) => b.type === "text"));
+      if (!hasText) continue;
+      parts.push(`${prefix}#### 👤 User (${time})`);
+      const body = typeof content === "string" ? content : (content as ContentBlock[]).filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
+      parts.push(body.split("\n").map((l) => `${prefix}${l}`).join("\n"));
+    } else if (r.type === "assistant") {
+      const u = r.message?.usage;
+      const tokenInfo = u ? ` (in:${u.input_tokens} out:${u.output_tokens})` : "";
+      parts.push(`${prefix}#### 🤖 Subagent (${time}${tokenInfo})`);
+      const blocks = typeof content === "string" ? [content] : (content as ContentBlock[]).map((b) => fmtContentBlock(b));
+      parts.push(blocks.join("\n").split("\n").map((l) => `${prefix}${l}`).join("\n"));
+    }
+    parts.push("");
+  }
+  return parts.join("\n");
+}
+
+function fmtContentBlock(block: ContentBlock, toolNames?: Map<string, string>, subagents?: Map<string, SessionRecord[]>): string {
   switch (block.type) {
     case "text":
       return block.text ?? "";
     case "tool_use": {
       const inputStr = JSON.stringify(block.input, null, 2);
       const shortId = block.id?.slice(-8) ?? "";
+      if (block.name === "Agent" && subagents) {
+        const prompt = (block.input as any)?.prompt ?? "";
+        const match = [...subagents.entries()].find(([, recs]) =>
+          firstPrompt(recs).slice(0, 100) === prompt.slice(0, 100)
+        );
+        const subType = (block.input as any)?.subagent_type ?? "agent";
+        const header = `**Agent:** \`${subType}\` (${shortId})`;
+        if (match) {
+          return `${header}\n${renderSubagent(match[1], 1)}`;
+        }
+        return header;
+      }
       return `**Tool call:** \`${block.name}\` (${shortId})\n\`\`\`json\n${inputStr}\n\`\`\``;
     }
     case "tool_result": {
@@ -142,7 +215,7 @@ function fmtContentBlock(block: ContentBlock, toolNames?: Map<string, string>): 
       if (typeof c === "string") {
         body = c.length > 3000 ? c.slice(0, 3000) + "\n…(truncated)" : c;
       } else if (Array.isArray(c)) {
-        body = c.map((b) => fmtContentBlock(b, toolNames)).join("\n");
+        body = c.map((b) => fmtContentBlock(b, toolNames, subagents)).join("\n");
       }
       const errorFlag = block.is_error ? " ⚠️ error" : "";
       const shortId = block.tool_use_id?.slice(-8) ?? "";
@@ -253,6 +326,7 @@ function sessionToMarkdown(filePath: string): string {
       }
     }
   }
+  const subagents = loadSubagents(filePath);
 
   for (const record of mainRecords) {
     const content = record.message?.content;
@@ -269,7 +343,7 @@ function sessionToMarkdown(filePath: string): string {
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
-        for (const block of content) parts.push(fmtContentBlock(block, toolNames));
+        for (const block of content) parts.push(fmtContentBlock(block, toolNames, subagents));
       }
       parts.push("");
     } else if (record.type === "assistant") {
@@ -282,7 +356,7 @@ function sessionToMarkdown(filePath: string): string {
       if (typeof content === "string") {
         parts.push(content);
       } else if (Array.isArray(content)) {
-        for (const block of content) parts.push(fmtContentBlock(block, toolNames));
+        for (const block of content) parts.push(fmtContentBlock(block, toolNames, subagents));
       }
       parts.push("");
     }
@@ -292,9 +366,9 @@ function sessionToMarkdown(filePath: string): string {
 }
 
 function sessionLabel(s: SessionMeta): string {
-  const date = s.timestamp.slice(0, 10);
-  const cwd = s.cwd.replace(process.env.HOME!, "~");
-  return `${date} | ${cwd} | ${s.firstMessage}`;
+  const dt = s.timestamp ? new Date(s.timestamp).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "unknown";
+  const size = s.sizeKb >= 1024 ? `${(s.sizeKb / 1024).toFixed(1)}MB` : `${s.sizeKb}KB`;
+  return `${dt} [${size}] ${s.firstMessage}`;
 }
 
 async function pickSession(sessions: SessionMeta[]): Promise<SessionMeta | null> {
@@ -342,7 +416,7 @@ function tailSession(filePath: string) {
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
         parts.push("");
-        outputMd(parts.join("\n"));
+        outputMd(parts.join("\n"), "glow");
       } else if (record.type === "assistant") {
         const u = record.message?.usage;
         const stop = record.message?.stop_reason ? ` stop:${record.message.stop_reason}` : "";
@@ -352,7 +426,7 @@ function tailSession(filePath: string) {
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
         parts.push("");
-        outputMd(parts.join("\n"));
+        outputMd(parts.join("\n"), "glow");
       }
     }
   }
@@ -369,34 +443,70 @@ async function main() {
     process.stdout.write(`Usage: claude-extractor [session-id] [flags]
 
 Flags:
-  --list       List all sessions
-  --tail       Stream a session live (auto-picks latest if no ID given)
-  --latest     Dump the most recent session
-  --no-pager   Print directly, skip less
-  -h, --help   Show this help
+  --list           List recent sessions in current directory
+  --list-all       List all sessions across all projects
+  --all            Fuzzy picker across all projects
+  --tail           Stream a session live (auto-picks latest if no ID given)
+  --latest         Dump the most recent session in current directory
+  --dump-all <dir> Dump all sessions as markdown files into <dir>
+  --render         Render with glow+less (default: raw markdown)
+  -h, --help       Show this help
 
 Examples:
-  claude-extractor                   # fzf picker
-  claude-extractor --tail            # tail latest session
-  claude-extractor abc123 --tail     # tail specific session
-  claude-extractor --latest          # dump most recent session
-  claude-extractor abc123 --no-pager # dump without pager
+  claude-extractor                        # fuzzy picker (current dir)
+  claude-extractor --all                  # fuzzy picker (all projects)
+  claude-extractor --tail                 # tail latest session
+  claude-extractor abc123 --tail          # tail specific session
+  claude-extractor --latest               # dump most recent session
+  claude-extractor --dump-all ./sessions  # dump all sessions to dir
+  claude-extractor abc123 --render        # render with glow pager
 `);
     process.exit(0);
   }
 
-  const sessionIdArg = args.find((a) => !a.startsWith("-"));
+  const dumpAllIdx = args.indexOf("--dump-all");
+  const dumpAllDir = dumpAllIdx !== -1 ? args[dumpAllIdx + 1] : null;
+  const sessionIdArg = args.find((a) => !a.startsWith("-") && a !== dumpAllDir);
   const listFlag = args.includes("--list");
+  const listAllFlag = args.includes("--list-all");
+  const allFlag = args.includes("--all");
   const tailFlag = args.includes("--tail");
-  const noPager = args.includes("--no-pager");
+  const renderFlag = args.includes("--render");
   const latestFlag = args.includes("--latest");
 
-  const sessions = listSessions();
+  const cwdProjectDir = cwdToProjectDir(process.cwd());
+  const localSessions = listSessions(cwdProjectDir);
 
   if (listFlag) {
-    for (const s of sessions) console.log(sessionLabel(s));
+    for (const s of localSessions.slice(0, 20)) console.log(sessionLabel(s));
     return;
   }
+
+  if (listAllFlag) {
+    for (const s of listSessions()) console.log(sessionLabel(s));
+    return;
+  }
+
+  if (dumpAllDir) {
+    const { mkdirSync, writeFileSync } = await import("fs");
+    mkdirSync(dumpAllDir, { recursive: true });
+    const all = listSessions();
+    for (const s of all) {
+      const slug = s.slug || s.sessionId.slice(0, 8);
+      const date = s.timestamp.slice(0, 10);
+      const filename = `${date}-${slug}.md`.replace(/[^a-zA-Z0-9._-]/g, "-");
+      const outPath = join(dumpAllDir, filename);
+      try {
+        writeFileSync(outPath, sessionToMarkdown(s.filePath));
+        process.stderr.write(`wrote ${outPath}\n`);
+      } catch (e) {
+        process.stderr.write(`skip ${s.sessionId.slice(0, 8)}: ${e}\n`);
+      }
+    }
+    return;
+  }
+
+  const sessions = allFlag ? listSessions() : (localSessions.length > 0 ? localSessions : listSessions());
 
   let session: SessionMeta | null = null;
 
@@ -418,7 +528,7 @@ Examples:
   if (tailFlag) {
     tailSession(session!.filePath);
   } else {
-    outputMd(sessionToMarkdown(session!.filePath), !noPager);
+    outputMd(sessionToMarkdown(session!.filePath), renderFlag ? "pager" : "raw");
   }
 }
 
