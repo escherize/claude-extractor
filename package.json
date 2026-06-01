@@ -2,7 +2,7 @@
   "name": "claude-extractor",
   "module": "index.ts",
   "type": "module",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "bin": {
     "claude-extractor": "./index.ts"
   },

@@ -5,6 +5,7 @@ import { spawnSync } from "child_process";
 import search from "@inquirer/search";
 
 const GLOW = spawnSync("which", ["glow"], { encoding: "utf8" }).status === 0 ? "glow" : null;
+const GLOW_WIDTH = Math.max(40, (process.stdout.columns || 90) - 10);
 
 function compact(md: string): string {
   return md
@@ -15,9 +16,9 @@ function compact(md: string): string {
 function outputMd(md: string, mode: "raw" | "glow" | "pager" = "raw") {
   const src = compact(md);
   if (mode === "pager" && GLOW) {
-    spawnSync("sh", ["-c", `${GLOW} - | less -R`], { input: src, stdio: ["pipe", "inherit", "inherit"] });
+    spawnSync("sh", ["-c", `${GLOW} --width ${GLOW_WIDTH} - | less -R`], { input: src, stdio: ["pipe", "inherit", "inherit"] });
   } else if ((mode === "glow" || mode === "pager") && GLOW) {
-    spawnSync(GLOW, ["-"], { input: src, stdio: ["pipe", "inherit", "inherit"] });
+    spawnSync(GLOW, ["--width", String(GLOW_WIDTH), "-"], { input: src, stdio: ["pipe", "inherit", "inherit"] });
   } else {
     process.stdout.write(src);
   }
@@ -416,7 +417,7 @@ function tailSession(filePath: string) {
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
         parts.push("");
-        outputMd(parts.join("\n"), "glow");
+        outputMd(parts.join("\n"), "raw");
       } else if (record.type === "assistant") {
         const u = record.message?.usage;
         const stop = record.message?.stop_reason ? ` stop:${record.message.stop_reason}` : "";
@@ -426,7 +427,7 @@ function tailSession(filePath: string) {
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
         parts.push("");
-        outputMd(parts.join("\n"), "glow");
+        outputMd(parts.join("\n"), "raw");
       }
     }
   }
