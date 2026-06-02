@@ -4,8 +4,7 @@ import { join, basename, dirname } from "path";
 import { spawnSync } from "child_process";
 import search from "@inquirer/search";
 
-const GLOW = spawnSync("which", ["glow"], { encoding: "utf8" }).status === 0 ? "glow" : null;
-const GLOW_WIDTH = Math.max(40, (process.stdout.columns || 90) - 10);
+const BAT = spawnSync("which", ["bat"], { encoding: "utf8" }).status === 0 ? "bat" : null;
 
 function compact(md: string): string {
   return md
@@ -13,12 +12,10 @@ function compact(md: string): string {
     .replace(/(^###[^\n]*)\n\n/gm, "$1\n");
 }
 
-function outputMd(md: string, mode: "raw" | "glow" | "pager" = "raw") {
+function outputMd(md: string, mode: "raw" | "render" | "pager" = "raw") {
   const src = compact(md);
-  if (mode === "pager" && GLOW) {
-    spawnSync("sh", ["-c", `${GLOW} --width ${GLOW_WIDTH} - | less -R`], { input: src, stdio: ["pipe", "inherit", "inherit"] });
-  } else if ((mode === "glow" || mode === "pager") && GLOW) {
-    spawnSync(GLOW, ["--width", String(GLOW_WIDTH), "-"], { input: src, stdio: ["pipe", "inherit", "inherit"] });
+  if (BAT && (mode === "render" || mode === "pager")) {
+    spawnSync(BAT, ["--language=markdown", "--paging=auto"], { input: src, stdio: ["pipe", "inherit", "inherit"] });
   } else {
     process.stdout.write(src);
   }
@@ -366,10 +363,23 @@ function sessionToMarkdown(filePath: string): string {
   return parts.join("\n");
 }
 
+function relativeTime(ts: string): string {
+  const diffMs = Date.now() - Date.parse(ts);
+  const mins = Math.floor(diffMs / 60000);
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days < 14) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 function sessionLabel(s: SessionMeta): string {
-  const dt = s.timestamp ? new Date(s.timestamp).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "unknown";
+  const dt = s.timestamp ? relativeTime(s.timestamp) : "unknown";
   const size = s.sizeKb >= 1024 ? `${(s.sizeKb / 1024).toFixed(1)}MB` : `${s.sizeKb}KB`;
-  return `${dt} [${size}] ${s.firstMessage}`;
+  const id = s.sessionId.slice(0, 8);
+  return `${dt} [${size}] ${id} ${s.firstMessage}`;
 }
 
 async function pickSession(sessions: SessionMeta[]): Promise<SessionMeta | null> {
@@ -444,14 +454,15 @@ async function main() {
     process.stdout.write(`Usage: claude-extractor [session-id] [flags]
 
 Flags:
-  --list           List recent sessions in current directory
-  --list-all       List all sessions across all projects
-  --all            Fuzzy picker across all projects
-  --tail           Stream a session live (auto-picks latest if no ID given)
-  --latest         Dump the most recent session in current directory
-  --dump-all <dir> Dump all sessions as markdown files into <dir>
-  --render         Render with glow+less (default: raw markdown)
-  -h, --help       Show this help
+  --list              List recent sessions in current directory
+  --list-all          List all sessions across all projects
+  --all               Fuzzy picker / search across all projects
+  --search <query>    Search session content (current dir; combine with --all)
+  --tail              Stream a session live (auto-picks latest if no ID given)
+  --latest            Dump the most recent session in current directory
+  --dump-all <dir>    Dump all sessions as markdown files into <dir>
+  --render            Render with bat pager (default: raw markdown)
+  -h, --help          Show this help
 
 Examples:
   claude-extractor                        # fuzzy picker (current dir)
@@ -467,7 +478,9 @@ Examples:
 
   const dumpAllIdx = args.indexOf("--dump-all");
   const dumpAllDir = dumpAllIdx !== -1 ? args[dumpAllIdx + 1] : null;
-  const sessionIdArg = args.find((a) => !a.startsWith("-") && a !== dumpAllDir);
+  const searchIdx = args.indexOf("--search");
+  const searchQuery = searchIdx !== -1 ? args[searchIdx + 1] : null;
+  const sessionIdArg = args.find((a) => !a.startsWith("-") && a !== dumpAllDir && a !== searchQuery);
   const listFlag = args.includes("--list");
   const listAllFlag = args.includes("--list-all");
   const allFlag = args.includes("--all");
@@ -485,6 +498,20 @@ Examples:
 
   if (listAllFlag) {
     for (const s of listSessions()) console.log(sessionLabel(s));
+    return;
+  }
+
+  if (searchQuery) {
+    const pool = allFlag ? listSessions() : localSessions.length > 0 ? localSessions : listSessions();
+    const q = searchQuery.toLowerCase();
+    for (const s of pool) {
+      try {
+        const raw = readFileSync(s.filePath, "utf8");
+        if (raw.toLowerCase().includes(q)) {
+          console.log(`${sessionLabel(s)}`);
+        }
+      } catch { /* skip unreadable */ }
+    }
     return;
   }
 
