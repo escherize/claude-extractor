@@ -402,7 +402,7 @@ async function pickSession(sessions: SessionMeta[]): Promise<SessionMeta | null>
   }
 }
 
-function tailSession(filePath: string) {
+function tailSession(filePath: string, renderMode: "raw" | "render" | "pager" = "raw") {
   let offset = 0;
 
   function flush() {
@@ -427,7 +427,7 @@ function tailSession(filePath: string) {
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
         parts.push("");
-        outputMd(parts.join("\n"), "raw");
+        outputMd(parts.join("\n"), renderMode);
       } else if (record.type === "assistant") {
         const u = record.message?.usage;
         const stop = record.message?.stop_reason ? ` stop:${record.message.stop_reason}` : "";
@@ -437,7 +437,7 @@ function tailSession(filePath: string) {
         if (typeof content === "string") parts.push(content);
         else if (Array.isArray(content)) for (const b of content) parts.push(fmtContentBlock(b));
         parts.push("");
-        outputMd(parts.join("\n"), "raw");
+        outputMd(parts.join("\n"), renderMode);
       }
     }
   }
@@ -554,7 +554,7 @@ Examples:
   }
 
   if (tailFlag) {
-    tailSession(session!.filePath);
+    tailSession(session!.filePath, renderFlag ? "render" : "raw");
   } else {
     outputMd(sessionToMarkdown(session!.filePath), renderFlag ? "pager" : "raw");
   }
