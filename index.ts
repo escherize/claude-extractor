@@ -12,10 +12,15 @@ function compact(md: string): string {
     .replace(/(^###[^\n]*)\n\n/gm, "$1\n");
 }
 
+function stripXmlTags(s: string): string {
+  return s.replace(/<[a-z][a-z0-9-]*(?:\s[^>]*)?>.*?<\/[a-z][a-z0-9-]*>/gs, "")
+          .replace(/<[a-z][a-z0-9-]*(?:\s[^>]*)?\/?\s*>/g, "");
+}
+
 function outputMd(md: string, mode: "raw" | "render" | "pager" = "raw") {
-  const src = compact(md);
+  const src = compact(stripXmlTags(md));
   if (BAT && (mode === "render" || mode === "pager")) {
-    spawnSync(BAT, ["--language=markdown", "--paging=auto"], { input: src, stdio: ["pipe", "inherit", "inherit"] });
+    spawnSync(BAT, ["--language=markdown", "--paging=auto", "--plain"], { input: src, stdio: ["pipe", "inherit", "inherit"] });
   } else {
     process.stdout.write(src);
   }
